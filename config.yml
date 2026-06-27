@@ -1,0 +1,134 @@
+package cz.ekonomika.listeners;
+
+import cz.ekonomika.EkonomikaPlugin;
+import cz.ekonomika.gui.AHGui;
+import cz.ekonomika.managers.AHManager;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+
+import java.util.List;
+
+public class AHInventoryListener implements Listener {
+
+    private final EkonomikaPlugin plugin;
+
+    public AHInventoryListener(EkonomikaPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player player)) return;
+
+        String title = PlainTextComponentSerializer.plainText().serialize(
+                event.getView().title());
+
+        if (!title.startsWith("Aukční dům")) return;
+
+        event.setCancelled(true);
+
+        int slot = event.getRawSlot();
+        if (slot < 0 || slot >= 54) return;
+
+        ItemStack clicked = event.getCurrentItem();
+        if (clicked == null || clicked.getType() == Material.AIR) return;
+
+        // Navigační tlačítka (spodní řada)
+        if (slot >= 45) {
+            handleNavigation(player, title, slot, clicked);
+            return;
+        }
+
+        // Kliknutí na výpis – pokus o koupi
+        ItemMeta meta = clicked.getItemMeta();
+        if (meta == null || !meta.hasLore()) return;
+
+        // Najdi ID z lore
+        String listingId = null;
+        List<net.kyori.adventure.text.Component> lore = meta.lore();
+        if (lore != null) {
+            for (net.kyori.adventure.text.Component line : lore) {
+                String plain = PlainTextComponentSerializer.plainText().serialize(line);
+                if (plain.startsWith("ID: ")) {
+                    listingId = plain.substring(4).trim();
+                    break;
+                }
+            }
+        }
+
+        if (listingId == null) return;
+
+        AHManager.AHListing listing = plugin.getAhManager().getListing(listingId);
+        if (listing == null) {
+            player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize("&cTento výpis již neexistuje."));
+            player.closeInventory();
+            return;
+        }
+
+        if (listing.getSellerUUID().equals(player.getUniqueId())) {
+            player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize("&cNemůžeš koupit vlastní výpis. Pro zrušení použij &e/ah cancel " + listingId));
+            return;
+        }
+
+        if (!plugin.getEkonomikaManager().has(player, listing.getPrice())) {
+            player.sendMessage(plugin.prefix() + plugin.msg("nedostatek-penez") +
+                    EkonomikaPlugin.colorize(" &7(Potřebuješ &6" + plugin.formatMena(listing.getPrice()) + "&7)"));
+            return;
+        }
+
+        // Koupě
+        boolean success = plugin.getAhManager().buyListing(listingId, player);
+        if (success) {
+            player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize(
+                    "&aKoupil jsi &e" + clicked.getType().name().toLowerCase().replace('_', ' ') +
+                    "&a za &6" + plugin.formatMena(listing.getPrice()) + "&a!"));
+            player.closeInventory();
+            // Znovu otevři AH po krátkém zpoždění
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> AHGui.openMain(plugin, player, 0), 2L);
+        } else {
+            player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize("&cNepodařilo se koupit výpis."));
+        }
+    }
+
+    private void handleNavigation(Player player, String title, int slot, ItemStack clicked) {
+        int currentPage = 0;
+        if (title.contains("(") && title.contains("/")) {
+            try {
+                currentPage = Integer.parseInt(title.split("\\(")[1].split("/")[0].trim()) - 1;
+            } catch (Exception ignored) {}
+        }
+
+        if (slot == 45) {
+            // Předchozí
+            AHGui.openMain(plugin, player, currentPage - 1);
+        } else if (slot == 53) {
+            // Další
+            AHGui.openMain(plugin, player, currentPage + 1);
+        } else if (slot == 48) {
+            // Moje výpisy
+            showMyListings(player);
+        }
+        // slot 49 = info, ignoruj
+    }
+
+    private void showMyListings(Player player) {
+        var myListings = plugin.getAhManager().getListingsByPlayer(player.getUniqueId());
+        if (myListings.isEmpty()) {
+            player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize("&7Nemáš žádné aktivní výpisy v aukčním domě."));
+            return;
+        }
+        player.sendMessage(plugin.prefix() + EkonomikaPlugin.colorize("&6Tvoje výpisy v AH:"));
+        for (AHManager.AHListing l : myListings) {
+            player.sendMessage(EkonomikaPlugin.colorize(
+                    "  &e" + l.getId() + " &7– " + l.getItem().getType().name().toLowerCase().replace('_', ' ') +
+                    " za &6" + plugin.formatMena(l.getPrice()) + " &7(zbývá: " + l.getTimeLeft() + ")"));
+        }
+        player.sendMessage(EkonomikaPlugin.colorize("&7Pro zrušení: &e/ah cancel <ID>"));
+    }
+}
